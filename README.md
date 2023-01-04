@@ -106,5 +106,161 @@ for artist in artists_names:
 #Save file as a csv
 df.to_csv(...)
 ```
+
+An additional table "inflation" is necessary to compare the auctions.
+```python
+#In Python
+import cpi
+
+#Real_dollars = (current_dollars * new_cpi) / old_cpi
+
+cpi.update() #Using the 'consumer Price Index for All Urban Consumer'
+
+#Create the df
+
+dfi = pd.DataFrame(columns=['Year','Current_CPI','2021_CPI'])
+
+for i in range(1913,2022):
+    dfi = dfi.append({'Year':i,'Current_CPI':cpi.get(i),'2021_CPI':cpi.get(2021)},ignore_index=True)
+
+dfi.to_csv('inflation.csv',header=dfi.columns,index=False,encoding='utf-8')
+file = open('inflation.csv')
+
+dfi['Year']=dfi['Year'].astype('int64')
+
+#Upload
+conn = psycopg2.connect(dbname= "railway",user= "postgres",password="t01Do87YbBaEQuArBc0J",host= "containers-us-west-141.railway.app",port= "6602")
+c = conn.cursor()
+print('opened')
+send_csv_to_psql(conn, 'inflation.csv', 'public.inflation')
+```
+  
   
 <br />
+  
+<h2>Step 3. Create a DB Online </h2>
+
+The db was created using Railway.app free tier subscription. To create the tables:
+  
+```sql
+create table public.art_auctions(
+title varchar(256),
+artist varchar(64),
+sale_date date,
+lot float,
+estimate varchar(64),
+estimate_low float,
+estimate_up float,
+price_realized varchar(64),
+price_realized_usd float,
+primary key (title,artist,sale_date,price_realized_usd),
+foreign key (artist) references public.artists_info(artist)
+);
+
+create table public.artists_info(
+artist varchar(64) primary key,
+birth_year int,
+death_year int,
+nationality varchar(64),
+art_medium varchar(64),
+art_movement varchar(128)
+);
+  
+create table public.inflation(
+	year int primary key,
+	current_cpi float,
+	cpi_2021 float
+);
+```
+  
+<br />
+  
+<h2>Step 4. Preliminary Answers with PostgreSQL </h2>
+  
+*Q1: What is the highest-selling painting each year?*<br/>
+  
+```sql
+-- This temp view contains the real price of sales
+create temp view real_sale as
+select extract(year from auc.sale_date) as sale_year
+	,auc.title
+	,auc.artist
+	,auc.price_realized_usd*inf.cpi_2021/inf.current_cpi as real_sale_price
+from public.art_auctions auc
+right join public.inflation inf
+on extract(year from auc.sale_date) =inf.year
+;
+
+select *
+from(select *
+	,dense_rank() over (
+						partition by sale_year
+						order by real_sale_price desc
+						) as sale_rank
+	from real_sale) as sub
+where sale_rank = 1
+order by sale_year
+;
+```
+  
+A1:
+<img src="https://i.imgur.com/7fzEkgw.png" alt="Answer 1"> <br/>
+  
+  
+*Q2: What is the highest-selling artist each year?*<br/>
+  
+Still using the temporary table made before for Question 1.
+  
+```sql
+select sale_year
+	,artist
+	,tot_sale
+	,dense_rank() over (partition by sale_year
+						order by tot_sale desc as sale_rank
+						)
+from(select sale_year, artist, sum(real_sale_price) as tot_sale
+	from real_sale
+	group by 1,2) as sub	 
+where sale_rank = 1
+order by sale_year
+; 
+```
+A2:
+<img src="https://i.imgur.com/M3KddVw.png" alt="Answer 2"> <br/>
+  
+  
+*Q3: Show the total auction sales for each art movement every year*<br/>
+  
+```sql
+select count(distinct art_movement)
+from public.artists_info art
+; -- There are 101 unique art movements in the DB
+
+select art_movement, count(artist)
+from public.artists_info art
+group by 1
+order by 2 desc
+;-- Let's focus on the first 10:
+		-- Baroque
+		-- Rococo
+		-- Expressionism
+		-- Romanticism
+		-- Baroque, Dutch Golden Age
+		-- Post-Impressionism
+		-- Impressionism
+		-- Pop Art
+		-- Realism
+		-- Surrealism
+      
+select art_movement, count(artist)
+from public.artists_info art
+group by 1
+order by 2 desc
+;
+```
+A3:
+<img src="https://i.imgur.com/mxnWtka.png" alt="Answer 3"> <br/>
+
+
+
+  
